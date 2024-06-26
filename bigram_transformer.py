@@ -103,11 +103,15 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()  
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(num_heads*head_size, n_embd)
 
     def forward(self, x):
         # x is (B,T,C)
         # this is to say that the output of the multi-head attention is then concatenated along the channel dim!
-        return torch.cat([h(x) for h in self.heads], dim=-1)
+        out = torch.cat([h(x) for h in self.heads], dim=-1) # (B,T,head_size)
+        # this is to make the last dim of head_size to be the size of the embedding size
+        out = self.proj(out) # (B,T,C)
+        return out
     
 class FeedForward(nn.Module):
     """simple linear layer followed by a non-linearity"""
@@ -115,8 +119,9 @@ class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embd, n_embd),
+            nn.Linear(n_embd, 4 * n_embd), # (B,T,C)@(C,C) ==> (B,T,C)
             nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd)
         )
 
     def forward(self, x):
@@ -131,8 +136,9 @@ class Block(nn.Module):
         self.ffwd = FeedForward(n_embd)
     
     def forward(self, x):
-        x = self.sa(x)
-        x = self.ffwd(x)
+        # now, we apply the self attention head and residual connection with x
+        x = x + self.sa(x) # ==> (B,T,C) + (B,T,C) ==> (B,T,C)
+        x = x + self.ffwd(x)
         return x
 
 
