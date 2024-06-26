@@ -99,7 +99,7 @@ class Head(nn.Module):
         return out
     
 class MultiHeadAttention(nn.Module):
-    "multi-heads of self attention running in parallel!"""
+    """multi-heads of self attention running in parallel!"""
     def __init__(self, num_heads, head_size):
         super().__init__()  
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
@@ -108,6 +108,33 @@ class MultiHeadAttention(nn.Module):
         # x is (B,T,C)
         # this is to say that the output of the multi-head attention is then concatenated along the channel dim!
         return torch.cat([h(x) for h in self.heads], dim=-1)
+    
+class FeedForward(nn.Module):
+    """simple linear layer followed by a non-linearity"""
+    # and this is on the level of per token basis, so all the token will be processed independently.
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, n_embd),
+            nn.ReLU(),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+    
+class Block(nn.Module):
+    """Transformer block: this provide the communication (attention) followed by the computation (feedfoward/ thinking)"""
+    def __init__(self, n_embd, n_head):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedForward(n_embd)
+    
+    def forward(self, x):
+        x = self.sa(x)
+        x = self.ffwd(x)
+        return x
+
 
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
@@ -119,14 +146,29 @@ class BigramLanguageModel(nn.Module):
         # layer to add positional embeddings
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         # adding self attention head ==> just for now, we keep the head size to be the same as the embedding size (C)/ size 32
-        # self.sa_head = Head(n_embd)
+        # ===> self.sa_head = Head(n_embd)
 
         # Now we try using multi-head attention
         # the idea behind multi-head attention is to have multiple heads of self attention running in parallel
         # and the idea is instead of having one attention that have large heads (32 head-size / C), 
         # we can have multiple heads of smaller size (8 head-size) and then concatenate the output of each head
         # so in the end, we will have the same output size as the single head attention.
-        self.sa_heads = MultiHeadAttention(num_heads=4, head_size=n_embd // 4) # 4 heads of size 8-dimensional attention. 
+        # ===> self.sa_heads = MultiHeadAttention(num_heads=4, head_size=n_embd // 4) # 4 heads of size 8-dimensional attention. 
+
+        # Now we apply MLP (multi layer perceptron)/ffwd to the output of the multi-head attention
+        # so before we apply ffwd, we kinda too fast to make prediction
+        # the multi-head attention is to make the model to be able to capture the commutation between the tokens, so it can understand the context
+        # and the feed forward layer is to make the model to be able to "think" about what they found based on the commutation.
+        # ===> self.ffwd = FeedForward(n_embd)
+
+        # Now we are using blocks to containerize the self attention and feed forward layer
+        # the idea is to make the model to be able to stack the transformer block, so it can capture the long-range dependencies
+        self.blocks = nn.Sequential(
+            Block(n_embd, n_head=4),
+            Block(n_embd, n_head=4),
+            Block(n_embd, n_head=4),
+            Block(n_embd, n_head=4),
+        )
 
         # adding language model head, to predict the next token (logits)
         self.lm_head = nn.Linear(n_embd, vocab_size)
@@ -139,7 +181,12 @@ class BigramLanguageModel(nn.Module):
         tok_embd = self.token_embedding_table(idx) # ==> (B,T,C)
         x = tok_embd + pos_embd # ==> (T,C) + (B,T,C) ==> (B,T,C)
         # apply the self attention head
-        x = self.sa_heads(x)
+        # x = self.sa_heads(x) # ==> (B,T,C)
+        # apply the feed forward layer
+        # x = self.ffwd(x) # ==> (B,T,C)
+
+        # apply the blocks
+        x = self.blocks(x) # ==> (B,T,C)
 
         # this will do tok_embd@lm_head
         # Note: assuming n_embd = C, will give us (B,T,vocab_size)
