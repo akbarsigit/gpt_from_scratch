@@ -3,14 +3,17 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 32 # how many independent sequences will we process in parallel?
-block_size = 8 # what is the maximum context length for predictions?
+batch_size = 64 # how many independent sequences will we process in parallel?
+block_size = 256 # what is the maximum context length for predictions?
 max_iters = 5000
-eval_interval = 300
-learning_rate = 1e-3
+eval_interval = 500
+learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 32
+n_embd = 384
+n_head = 6
+n_layer = 6
+dropout = 0.2
 # ------------
 
 torch.manual_seed(1337)
@@ -72,10 +75,10 @@ class Head(nn.Module):
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
-
         # there is no tril in the paramater of the module, so in the torch convention, we call it buffer and not paramater
         #  and we have to assign it to the module.
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(dropout)
     
     def forward(self, x):
         B, T, C = x.shape
@@ -92,6 +95,7 @@ class Head(nn.Module):
         # this will do softmax along with the last dimension, or along the row dim
         # sum to one one the row.
         wei = F.softmax(wei, dim=-1) # (B,T,T)
+        wei = self.dropout(wei)
 
         # now we calculate the value and aggregate it with the attention scores!
         v = self.value(x) # (B,T,C)
@@ -104,13 +108,14 @@ class MultiHeadAttention(nn.Module):
         super().__init__()  
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(num_heads*head_size, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         # x is (B,T,C)
         # this is to say that the output of the multi-head attention is then concatenated along the channel dim!
         out = torch.cat([h(x) for h in self.heads], dim=-1) # (B,T,head_size)
         # this is to make the last dim of head_size to be the size of the embedding size
-        out = self.proj(out) # (B,T,C)
+        out = self.dropout(self.proj(out)) # (B,T,C)
         return out
     
 class FeedForward(nn.Module):
@@ -121,7 +126,8 @@ class FeedForward(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(n_embd, 4 * n_embd), # (B,T,C)@(C,C) ==> (B,T,C)
             nn.ReLU(),
-            nn.Linear(4 * n_embd, n_embd)
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout)
         )
 
     def forward(self, x):
@@ -173,13 +179,10 @@ class BigramLanguageModel(nn.Module):
 
         # Now we are using blocks to containerize the self attention and feed forward layer
         # the idea is to make the model to be able to stack the transformer block, so it can capture the long-range dependencies
-        self.blocks = nn.Sequential(
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            nn.LayerNorm(n_embd),
-        )
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
 
+
+        self.ln_f = nn.LayerNorm(n_embd), # final layer normalization
         # adding language model head, to predict the next token (logits)
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
